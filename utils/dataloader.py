@@ -3,6 +3,7 @@ from itertools import chain
 
 import numpy as np
 import tensorflow as tf
+from scipy.sparse import csr_matrix
 
 
 def generate_data(datas):
@@ -12,44 +13,7 @@ def generate_data(datas):
         yield sample, label  # 生成几个，流式处理接口就放几个，这里并没有按照 输出定义 输出tuple，而是单个的
 
 
-def preprocess(raw_data):
-    x = raw_data[0]
-    label = raw_data[1]
-    # 找出最长的序列长度
-    len_list = [len(data) for data in x]
-    max_len = np.max(len_list)
-    # 反转序列 填充0，可以更改为tf2.0写法
-    inputs = [list(reversed(upois)) + [0] * (max_len - le) if le < max_len else list(reversed(upois[-max_len:]))
-              for upois, le in zip(x, len_list)]
-    mask = [[1] * le + [0] * (max_len - le) if le < max_len else [1] * max_len
-            for le in len_list]
-
-    inputs = inputs[1222]
-    max_n_node = max_len
-    node = np.unique(inputs)
-    items = node.tolist() + (max_n_node - len(node)) * [0]
-    adj = np.zeros((max_n_node, max_n_node))
-    for i in np.arange(len(inputs) - 1):
-        u = np.where(node == inputs[i])[0][0]
-        # 1:自环  2：u->v  3：u<-v  4：u->v， u<-v
-        adj[u][u] = 1  # 自环
-        if inputs[i + 1] == 0:  # 意味着session就此结束
-            break
-        v = np.where(node == inputs[i + 1])[0][0]
-        if u == v or adj[u][v] == 4:
-            continue
-        adj[v][v] = 1
-        if adj[v][u] == 2:  # 存在v->u，那么u-v都是存在的 置4
-            adj[u][v] = 4
-            adj[v][u] = 4
-        else:
-            adj[u][v] = 2
-            adj[v][u] = 3
-    alias_inputs = [np.where(node == i)[0][0] for i in inputs]
-    print(alias_inputs)
-
-
-def process_data(x, y):  # 这里仅是数据集中的一个元素 (x, y) 流式处理时并不带有batch的维度
+def process(x, y):  # 这里仅是数据集中的一个元素 (x, y) 流式处理时并不带有batch的维度
     # features = row[0]
     features = x
     labels = y
@@ -86,6 +50,34 @@ def process_data(x, y):  # 这里仅是数据集中的一个元素 (x, y) 流式
     return x, label
 
 
+def process_data(x, y):
+    pass
+
+
+def data_masks(all_sessions, n_node):
+    indptr, indices, data = [], [], []
+    indptr.append(0)
+    for j in range(len(all_sessions)):
+        session = np.unique(all_sessions[j])
+        length = len(session)
+        s = indptr[-1]
+        indptr.append((s + length))
+        for i in range(length):
+            indices.append(session[i] - 1)
+            data.append(1)
+    matrix = csr_matrix((data, indices, indptr), shape=(len(all_sessions), n_node))
+    return matrix
+
+
+# def data_masks_new(all_sessions, n_node):
+#     indices = []
+#     values = []
+#     dense_shape = (len(all_sessions), n_node)
+#     for session in all_sessions:
+#         for item in session:
+
+
+
 def compute_max_len(raw_data):
     x = raw_data[0]
     # 找出最长的序列长度
@@ -100,31 +92,18 @@ def compute_item_num(sequence):
     return items_num
 
 
-def process_adj(adj_dict, n_entity, sample_num, num_dict=None):
-    # 全局图 随机采样
-    adj_entity = np.zeros([n_entity, sample_num], dtype=np.int64)
-    num_entity = np.zeros([n_entity, sample_num], dtype=np.int64)
-    for entity in range(1, n_entity):
-        neighbor = list(adj_dict[entity])
-        neighbor_weight = list(num_dict[entity])
-        n_neighbor = len(neighbor)
-        if n_neighbor == 0:
-            continue
-        if n_neighbor >= sample_num:
-            sampled_indices = np.random.choice(list(range(n_neighbor)), size=sample_num, replace=False)
-        else:
-            sampled_indices = np.random.choice(list(range(n_neighbor)), size=sample_num, replace=True)
-        adj_entity[entity] = np.array([neighbor[i] for i in sampled_indices])
-        num_entity[entity] = np.array([neighbor_weight[i] for i in sampled_indices])
-
-    return adj_entity, num_entity
+def compute_max_node(sequence):
+    seq_in_1D = list(chain.from_iterable(sequence))
+    max_node = np.max(seq_in_1D)
+    return max_node
 
 
 class DataLoader:
     def __init__(self, raw_data, train_mode=True):
         self.max_len = compute_max_len(raw_data)  # 最长序列
         self.data = raw_data
-        self.data = self.reverse_data()  # 反转输入序列
+        self.data = data_masks(self.data[0], 40727)
+        # self.data = self.reverse_data()  # 反转输入序列
         self.train_mode = train_mode
         # self.max_n_node =
 
@@ -168,9 +147,12 @@ class DataLoader:
 if __name__ == '__main__':
     # path_dataset = '../dataset/tmall'
     # train_data = pickle.load(open(f'{path_dataset}/train.txt', 'rb'))
-    a = [903, 907, 906, 905, 904, 903, 902]
-    b = 903
-    a = tf.constant(a)
-    b = tf.constant(b)
+    # a = [903, 907, 906, 905, 904, 903, 902]
+    # b = 903
+    # a = tf.constant(a)
+    # b = tf.constant(b)
+    seq = [[1], [3], [5], [7], [9], [11]]
+    n_node = len(seq)
+    data_masks(seq, n_node)
     # [903, 907, 906, 905, 904, 903, 902, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     # 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
