@@ -4,6 +4,8 @@ from itertools import chain
 import numpy as np
 import tensorflow as tf
 from scipy.sparse import csr_matrix
+from tensorflow.python.ops.linalg.sparse import sparse_csr_matrix_ops as csr
+from tensorflow import raw_ops
 
 
 def generate_data(datas):
@@ -13,48 +15,19 @@ def generate_data(datas):
         yield sample, label  # 生成几个，流式处理接口就放几个，这里并没有按照 输出定义 输出tuple，而是单个的
 
 
-def process(x, y):  # 这里仅是数据集中的一个元素 (x, y) 流式处理时并不带有batch的维度
-    # features = row[0]
-    features = x
-    labels = y
-    items, alias_inputs = tf.unique(features)
-    # 注意 alias_inputs 并不一致
-    vector_length = tf.shape(features)[0]
-    n_nodes = tf.shape(items)[0]
-    adj = tf.zeros([n_nodes, n_nodes], dtype=tf.int32)  # TODO: 待会看看需不需要+1 注意shape 留意后续处理
-    # A.先算出 value 和 index 然后 创建 稀疏矩阵 转化成 密集矩阵
-    # B.如何优化循环，不用python代码
-    for i in range(vector_length - 1):
-        u = tf.where(condition=items == features[i])[0][0]
-        # adj[u][u] = 1
-        adj = tf.tensor_scatter_nd_update(tensor=adj, indices=[[u, u]], updates=[1])  # depth = 2
-        v = tf.where(condition=items == features[i + 1])[0][0]
-        if u == v or adj[u][v] == 4:
-            continue
-        # adj[v][v] = 1
-        adj = tf.tensor_scatter_nd_update(tensor=adj, indices=[[v, v]], updates=[1])
-        if adj[v][u] == 2:
-            # adj[u][v] = 4
-            # adj[v][u] = 4
-            adj = tf.tensor_scatter_nd_update(tensor=adj, indices=[[u, v],
-                                                                   [v, u]], updates=[4, 4])
-        else:
-            # adj[u][v] = 2
-            # adj[v][u] = 3
-            adj = tf.tensor_scatter_nd_update(tensor=adj, indices=[[u, v],
-                                                                   [v, u]], updates=[2, 3])
-    mask = tf.fill(tf.shape(features), 1.0)
-    adj = tf.cast(adj, tf.float32)
-    x = (alias_inputs, adj, items, mask, features)
-    label = labels - 1
-    return x, label
-
-
 def process_data(x, y):
-    pass
+    session_len = tf.shape(x)[0]
+    items = x
+    reversed_items = tf.reverse(tensor=x, axis=0)
+    mask = tf.ones(shape=(session_len,))
+
+    sample = (session_len, items, reversed_items, mask)
+    labels = y - 1
+
+    return sample, labels
 
 
-def data_masks(all_sessions, n_node):
+def data_masks_old(all_sessions, n_node):
     indptr, indices, data = [], [], []
     indptr.append(0)
     for j in range(len(all_sessions)):
@@ -69,13 +42,57 @@ def data_masks(all_sessions, n_node):
     return matrix
 
 
-# def data_masks_new(all_sessions, n_node):
-#     indices = []
-#     values = []
-#     dense_shape = (len(all_sessions), n_node)
-#     for session in all_sessions:
-#         for item in session:
+def data_masks_new(all_sessions, n_node):
+    session_length = len(all_sessions)
+    indices = []
+    dense_shape = (session_length, n_node)  # M x N
+    for session_id, session in zip(range(session_length), all_sessions):
+        unique_item, idx = tf.unique(session)
+        length = tf.shape(unique_item)[0]
+        for uid in range(length):
+            indices.append([session_id, tf.gather(unique_item, indices=uid)])  # [HyperEdge_id, node_id]
+    values = tf.ones(shape=(len(indices),), dtype=tf.int64)
+    H_T = tf.sparse.SparseTensor(indices=indices, values=values, dense_shape=dense_shape)  # 注意这里是HyperGraph矩阵的转置
+    H_T_Matrix = csr.sparse_tensor_to_csr_sparse_matrix(indices=indices, values=values,
+                                                        dense_shape=dense_shape)
+    # BH_T
+    BH_T_Matrix = csr.sparse_matrix_transpose(csr.matmul(a=H_T_Matrix,
+                                                         b=csr.CSRSparseMatrix(
+                                                             1.0 / tf.sparse.reshape(tf.sparse.reduce_sum(H_T, axis=1),
+                                                                                     shape=(1, -1))),
+                                                         transpose_a=True
+                                                         ), type=tf.float32)  # 如果转置失败，直接去乘法转置
+    # H
+    H = tf.sparse.transpose(H_T)
+    # DH
+    DH_T_Matrix = csr.matmul(a=H_T_Matrix,
+                             b=csr.CSRSparseMatrix(1.0 / tf.sparse.reshape(tf.sparse.reduce_sum(H, axis=1),
+                                                                           shape=(1, -1))))
+    DHBH_T_Matrix = csr.matmul(a=DH_T_Matrix, b=BH_T_Matrix, transpose_a=True)
+    DHBH_T = csr.csr_sparse_matrix_to_sparse_tensor(DHBH_T_Matrix, type=tf.float32)
+    DHBH_T = tf.SparseTensor(DHBH_T)
+    return DHBH_T
 
+
+@tf.function
+def get_overlap_weight(sessions):
+    batch_size = tf.shape(sessions)[0]
+    weight = tf.zeros(shape=(batch_size, batch_size))
+    for i in range(batch_size):
+        seq_a = tf.gather(sessions, i)
+        seq_a, _ = tf.unique(seq_a)
+        for j in range(i + 1, batch_size):
+            seq_b, _ = tf.unique(tf.gather(sessions, j))
+            intersection = tf.sets.intersection(seq_a, seq_b)
+            union = tf.sets.union(seq_a, seq_b)
+            weight = tf.tensor_scatter_nd_update(tensor=weight, indices=[[i, j],
+                                                                         [j, i]],
+                                                 updates=tf.shape(intersection)[0] / tf.shape(union)[0])
+    weight = weight + tf.eye(batch_size)
+    degree = tf.reduce_sum(weight, axis=1)
+    degree = tf.linalg.diag(diagonal=1.0 / degree)
+
+    return weight, degree
 
 
 def compute_max_len(raw_data):
@@ -99,13 +116,13 @@ def compute_max_node(sequence):
 
 
 class DataLoader:
-    def __init__(self, raw_data, train_mode=True):
+    def __init__(self, raw_data, n_node, train_mode=True):
         self.max_len = compute_max_len(raw_data)  # 最长序列
         self.data = raw_data
-        self.data = data_masks(self.data[0], 40727)
+        self.n_node = n_node
+        self.adj = data_masks_new(self.data[0], n_node=self.n_node)
         # self.data = self.reverse_data()  # 反转输入序列
         self.train_mode = train_mode
-        # self.max_n_node =
 
     def dataloader(self):
         dataset = tf.data.Dataset.from_generator(generator=partial(generate_data, self.data),
@@ -121,7 +138,7 @@ class DataLoader:
         if self.train_mode:
             pass
             # TODO： 训练时打开shuffle，调试时避免减损性能
-            dataset = dataset.shuffle(buffer_size=len(self.data[0]) - (len(self.data[0]) % 100))
+            # dataset = dataset.shuffle(buffer_size=len(self.data[0]) - (len(self.data[0]) % 100))
         dataset = dataset.padded_batch(batch_size=100,
                                        padded_shapes=(
                                            ([self.max_len],
@@ -145,14 +162,4 @@ class DataLoader:
 
 
 if __name__ == '__main__':
-    # path_dataset = '../dataset/tmall'
-    # train_data = pickle.load(open(f'{path_dataset}/train.txt', 'rb'))
-    # a = [903, 907, 906, 905, 904, 903, 902]
-    # b = 903
-    # a = tf.constant(a)
-    # b = tf.constant(b)
-    seq = [[1], [3], [5], [7], [9], [11]]
-    n_node = len(seq)
-    data_masks(seq, n_node)
-    # [903, 907, 906, 905, 904, 903, 902, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    # 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    get_slice()

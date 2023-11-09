@@ -1,6 +1,6 @@
 import argparse
 import pickle
-from utils.dataloader import compute_item_num, DataLoader,compute_max_node
+from utils.dataloader import compute_item_num, DataLoader, compute_max_node
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--embSize', type=int, default=100, help='embedding size')
@@ -15,12 +15,9 @@ print(opt)
 train_data = pickle.load(open("dataset/tmall/train.txt", 'rb'))
 test_data = pickle.load(open("dataset/tmall/test.txt", "rb"))
 all_train_data = pickle.load(open("dataset/tmall/all_train_seq.txt", 'rb'))
-item_num = compute_item_num(all_train_data) + 1
-max_node = compute_max_node(all_train_data)
+item_num = compute_item_num(all_train_data)  # 40727
 
-train_data = DataLoader(train_data, train_mode=True)
+train_data = DataLoader(train_data, n_node=item_num, train_mode=True)
 # test_data = DataLoader(test_data, train_mode=False).dataloader()
 
 # MODEL
-
-
