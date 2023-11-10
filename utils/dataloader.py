@@ -120,9 +120,11 @@ class DataLoader:
         self.max_len = compute_max_len(raw_data)  # 最长序列
         self.data = raw_data
         self.n_node = n_node
-        self.adj = data_masks_new(self.data[0], n_node=self.n_node)
         # self.data = self.reverse_data()  # 反转输入序列
         self.train_mode = train_mode
+
+    def get_adj(self):
+        return data_masks_new(self.data[0], n_node=self.n_node)
 
     def dataloader(self):
         dataset = tf.data.Dataset.from_generator(generator=partial(generate_data, self.data),
@@ -152,13 +154,6 @@ class DataLoader:
                                        )
         dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
         return dataset
-
-    def reverse_data(self):
-        x = self.data[0]
-        x = [list(reversed(seq)) for seq in x]
-        y = self.data[1]
-        new_data = (x, y)
-        return new_data
 
 
 if __name__ == '__main__':

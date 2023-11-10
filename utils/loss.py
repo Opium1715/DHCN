@@ -10,7 +10,9 @@ class Loss_with_L2(tf.keras.losses.Loss):
         self.l2 = tf.keras.regularizers.L2(l2=l2)
 
     def call(self, y_true, y_pred):
-        scc_loss = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred)
+        con_loss = y_pred[1]
+        y_pred = y_pred[0]
+        scc_loss = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred, from_logits=True)
         variables_l2 = [self.l2(x) for x in self.model.trainable_variables]
         l2_loss = tf.add_n(variables_l2)
-        return scc_loss + l2_loss
+        return scc_loss + l2_loss + con_loss

@@ -52,21 +52,23 @@ class SelfSuperviseLayer(keras.layers.Layer):
     def __init__(self, seed=None, **kwargs):
         super().__init__(**kwargs)
         self.seed = seed
+
     def call(self, inputs, *args, **kwargs):  # (sess_emb_hgnn, sess_emb_lgcn)
         session_emb_hgcn = inputs[0]
         session_emb_lgcn = inputs[1]
         shuffle_row_emb_hgcn = tf.gather(params=session_emb_hgcn,
-                                     indices=tf.random.shuffle(tf.range(tf.shape(session_emb_hgcn)[0]), seed=self.seed))
+                                         indices=tf.random.shuffle(tf.range(tf.shape(session_emb_hgcn)[0]),
+                                                                   seed=self.seed))
         shuffle_row_clo_emb_hgcn = tf.gather(params=shuffle_row_emb_hgcn,
-                                             indices=tf.random.shuffle(tf.range(tf.shape(session_emb_hgcn)[1]), seed=self.seed))
+                                             indices=tf.random.shuffle(tf.range(tf.shape(session_emb_hgcn)[1]),
+                                                                       seed=self.seed))
 
         pos = tf.reduce_sum(tf.matmul(session_emb_hgcn, session_emb_lgcn), 1)
         neg1 = tf.reduce_sum(tf.matmul(session_emb_lgcn, shuffle_row_clo_emb_hgcn), 1)
         ones = tf.ones(shape=(tf.shape(neg1)[0]))
-        con_loss = tf.reduce_sum(-tf.math.log(1e-8 + tf.sigmoid(pos))-tf.math.log(1e-8 + (ones - tf.sigmoid(neg1))))
+        con_loss = tf.reduce_sum(-tf.math.log(1e-8 + tf.sigmoid(pos)) - tf.math.log(1e-8 + (ones - tf.sigmoid(neg1))))
 
         return con_loss
-
 
 
 class DHCN(keras.models.Model):
@@ -122,13 +124,14 @@ class DHCN(keras.models.Model):
 
         return weight, degree
 
-    def call(self, inputs, training=None, mask=None):  # (session_item, session_len, D, A, reversed_sess_item, mask)
+    def call(self, inputs, training=None, mask=None):  # (session_item, session_len, reversed_sess_item, mask)
         session_item = inputs[0]
         session_len = inputs[1]
-        D = inputs[2]
-        A = inputs[3]
-        reversed_sess_item = inputs[4]
-        mask = inputs[5]
+        # D = inputs[2]
+        # A = inputs[3]
+        A, D = self.get_overlap_weight(session_item)
+        reversed_sess_item = inputs[2]
+        mask = inputs[3]
 
         batch_size = tf.shape(mask)[0]
         # HyperGraph
@@ -148,7 +151,8 @@ class DHCN(keras.models.Model):
 
         Xs = tf.tile(tf.expand_dims(Xs, -2), multiples=(1, len_seq, 1))
         # nh = tf.nn.tanh(seq_h) 为什么直接连偏置都没有了，权重都没有了？
-        Xt = self.w_1(seq_h)
+        # Xt = self.w_1(seq_h)
+        Xt = tf.tanh(seq_h)
         Xt = tf.nn.sigmoid(self.glu1(Xt) + self.glu2(Xs))
 
         beta = tf.matmul(Xt, self.f)
@@ -157,7 +161,13 @@ class DHCN(keras.models.Model):
 
         # LineGraph
         session_emb_lg = self.LineGraph(self.embedding, D, A, session_item, session_len)
-        con_loss =
+        # self-supervise
+        con_loss = self.SSL()
+        beta_con_loss = self.beta * con_loss
+        # predict # 这里和之前的不一样，用了新提取出来的item_emb, 之前都是用本轮原始的item_emb
+        scores = tf.matmul(theta_h, item_embedding_hg, transpose_b=True)
 
+        output = (scores, beta_con_loss)
 
+        return output
 
