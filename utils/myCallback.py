@@ -157,7 +157,7 @@ class P_MRR(tf.keras.callbacks.Callback):
             mrr = np.mean(mrr)
             logs['P@20'] = precision
             logs['MRR@20'] = mrr
-        # solution 2： 分批次 size=100 4it/s
+        # solution 2： 分批次 size=100 7it/s
         elif self.performance_mode == 1:
             # y_labels = self.validation_data.map(extract_labels)
             print("calculate P@20 and MRR@20 of current epoch\n")

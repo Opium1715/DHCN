@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import os
 import pickle
 from utils.dataloader import compute_item_num, DataLoader, compute_max_node
 from tensorflow import keras
@@ -11,6 +12,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--embSize', type=int, default=100, help='embedding size')
 parser.add_argument('--l2', type=float, default=1e-5, help='l2 penalty')
 parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
+parser.add_argument('--lr_dc', type=float, default=0.1, help='learning rate')
+parser.add_argument('--lr_dc_step', type=float, default=0.5, help='learning rate')
 parser.add_argument('--layer', type=float, default=3, help='the number of layer used')
 parser.add_argument('--beta', type=float, default=0.02, help='ssl task maginitude')
 opt = parser.parse_args()
@@ -20,11 +23,12 @@ train_data = pickle.load(open("dataset/tmall/train.txt", 'rb'))
 test_data = pickle.load(open("dataset/tmall/test.txt", "rb"))
 all_train_data = pickle.load(open("dataset/tmall/all_train_seq.txt", 'rb'))
 item_num = compute_item_num(all_train_data)  # 40727
-epoch_steps = len(train_data[1]) / 100
+epoch_steps = int(len(train_data[1]) / 100)
 test_data_size = len(test_data[1])
-train_dataloader = DataLoader(train_data, n_node=item_num, train_mode=True).dataloader()
+train_dataloader = DataLoader(train_data, n_node=item_num, train_mode=True)
 test_dataloader = DataLoader(test_data, n_node=item_num, train_mode=False).dataloader()
-adj = train_data.get_adj()
+adj = train_dataloader.get_adj()
+train_dataloader = train_dataloader.dataloader()
 
 # MODEL
 save_dir = 'logs'
@@ -33,7 +37,7 @@ model = DHCN(adj, item_num, layers=opt.layer, beta=opt.beta)
 lr_schedule = keras.optimizers.schedules.ExponentialDecay(initial_learning_rate=opt.lr,
                                                           decay_rate=opt.lr_dc,
                                                           decay_steps=opt.lr_dc_step * epoch_steps,
-                                                          staircase=True)
+                                                          staircase=False)
 early_stopping = keras.callbacks.EarlyStopping(monitor='MRR@20',
                                                min_delta=0,
                                                patience=5,
@@ -41,11 +45,11 @@ early_stopping = keras.callbacks.EarlyStopping(monitor='MRR@20',
                                                mode='max')
 history_recoder = HistoryRecord(log_dir=os.path.join(save_dir, 'log_' + time_str))
 p_mrr = P_MRR(val_data=test_dataloader, performance_mode=2, val_size=int(test_data_size/100))
-model.compile(optimizer=keras.optimizers.Adam(learning_rate=lr_schedule),
-              loss=Loss_with_L2(model=model, l2=opt.l2),
+model.compile(optimizer=keras.optimizers.Adam(learning_rate=0.001),
+              loss=Loss_with_L2(model=model, l2=0),
               run_eagerly=False)
 model.fit(x=train_dataloader,
-          epochs=30,
+          epochs=1,
           verbose=1,
           callbacks=[p_mrr, history_recoder, early_stopping],
           validation_data=test_dataloader)
